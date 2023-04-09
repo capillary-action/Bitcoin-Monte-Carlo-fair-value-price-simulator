@@ -1,0 +1,184 @@
+import numpy as np
+import tkinter as tk
+from tkinter import ttk
+import matplotlib.pyplot as plt
+import pandas as pd
+from pycoingecko import CoinGeckoAPI
+import datetime
+import yfinance as yf
+
+
+
+def fetch_data():
+    # Initialize CoinGeckoAPI client
+    cg = CoinGeckoAPI()
+
+    # Define start and end dates for historical data
+    start_date = '2020-01-01'
+    end_date = '2023-04-01'
+
+    # Convert date strings to datetime objects
+    start_date_obj = datetime.datetime.strptime(start_date, '%Y-%m-%d')
+    end_date_obj = datetime.datetime.strptime(end_date, '%Y-%m-%d')
+
+    # Convert datetime objects to UNIX timestamps (in seconds)
+    start_timestamp = int(start_date_obj.timestamp())
+    end_timestamp = int(end_date_obj.timestamp())
+
+    # Obtain historical Bitcoin price data
+    bitcoin_data = cg.get_coin_market_chart_range_by_id(id='bitcoin', vs_currency='usd', from_timestamp=start_timestamp, to_timestamp=end_timestamp)
+
+    # Extract price data from the response
+    price_data = bitcoin_data['prices']
+
+    # Convert the price data to a pandas DataFrame
+    price_df = pd.DataFrame(price_data, columns=['timestamp', 'price'])
+
+    # Convert timestamp to datetime format
+    price_df['timestamp'] = pd.to_datetime(price_df['timestamp'], unit='ms')
+
+    # Set timestamp as index
+    price_df.set_index('timestamp', inplace=True)
+
+    # Fetch S&P 500 historical price data
+    sp500_data = yf.download('^GSPC', start=start_date, end=end_date)
+    sp500_data = sp500_data[['Close']]
+    sp500_data.rename(columns={'Close': 'SP500'}, inplace=True)
+
+    # Combine the price data with S&P 500 data
+    price_df = price_df.join(sp500_data, how='outer')
+    price_df['SP500'] = price_df['SP500'].fillna(method='ffill')
+
+    return price_df, sp500_data
+
+
+
+def run_simulation(P0, M_success, p_success, T, r, N, total_bitcoin_supply, price_df, sp500_data):
+    outcomes = np.random.choice(['success', 'failure'], size=N, p=[p_success, 1-p_success])
+    FVs = np.where(outcomes == 'success', M_success / total_bitcoin_supply, 0)
+    PVs = FVs / (1 + r)**T
+    ROI = PVs / P0
+
+    start_price = sp500_data.iloc[0]['SP500']
+    end_price = sp500_data.iloc[-1]['SP500']
+    market_ROI = (end_price / start_price) ** (1/T) - 1
+    ROIs = [market_ROI] * N
+
+    return ROI, ROIs
+
+
+
+def estimate_fair_value(P0, M_success, p_success, T, r, N, total_bitcoin_supply, price_df, sp500_data):
+    ROI, ROIs = run_simulation(P0, M_success, p_success, T, r, N, total_bitcoin_supply, price_df, sp500_data)
+    fair_ROI = np.mean(ROI)
+    market_ROI = np.mean(ROIs)
+    return fair_ROI, market_ROI, ROI, ROIs
+
+
+def calculate_fair_value():
+    # Fetch the data when the button is clicked
+    price_df, sp500_data = fetch_data()
+
+    P0 = float(P0_var.get())
+    M_success = float(M_success_var.get())
+    p_success = float(p_success_var.get())
+    T = float(T_var.get())
+    r = float(r_var.get())
+    N = int(N_var.get())
+    total_bitcoin_supply = float(total_bitcoin_supply_var.get())
+
+    fair_ROI, market_ROI, ROI, ROIs = estimate_fair_value(P0, M_success, p_success, T, r, N, total_bitcoin_supply, price_df, sp500_data)
+
+    # Update the result_label with the fair value and market value results
+    result_label.config(text=f"Fair Value ROI: {fair_ROI:.2%}, Market ROI: {market_ROI:.2%}")
+
+    # Call the plot_histogram function
+    plot_histogram(ROI, ROIs, fair_ROI, market_ROI, price_df)
+
+
+
+
+
+
+def plot_histogram(ROI, ROIs, fair_ROI, market_ROI, price_df):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot ROI and ROIs histograms
+    ax1.hist(ROI, bins=50, color='blue', edgecolor='black', alpha=0.7, label="Strategy")
+    ax1.hist(ROIs, bins=50, color='green', edgecolor='black', alpha=0.7, label="Market")
+    ax1.set_xlabel("Return on Investment")
+    ax1.set_ylabel("Frequency")
+    ax1.set_title("Histogram of Monte Carlo Simulation Results")
+    ax1.axvline(fair_ROI, color='red', linestyle='dashed', linewidth=2, label=f"Mean (Strategy): {fair_ROI:.2%}")
+    ax1.axvline(market_ROI, color='black', linestyle='dashed', linewidth=2, label=f"Mean (Market): {market_ROI:.2%}")
+    ax1.legend()
+    
+    # Plot Bitcoin and S&P 500 prices
+    ax2.plot(price_df.index, price_df['price'], label='Bitcoin Price')
+    ax2.plot(price_df.index, price_df['SP500'], label='S&P 500 Price')
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Price (USD)")
+    ax2.set_title("Bitcoin and S&P 500 Prices")
+    ax2.legend()
+
+
+    # Plot Bitcoin Price and Moving Averages
+    ax2.plot(price_df.index, price_df['price'], label='Price')
+    ax2.plot(price_df.index, price_df['price'].rolling(window=50).mean(), label='50 Day Moving Average')
+    ax2.plot(price_df.index, price_df['price'].rolling(window=200).mean(), label='200 Day Moving Average')
+    ax2.set_xlabel("Date")
+    ax2.set_ylabel("Price (USD)")
+    ax2.set_title("Bitcoin Price and Moving Averages")
+    ax2.legend()
+    ax2.set_xlim(price_df.index.min(), price_df.index.max())
+
+
+    plt.show()
+
+
+
+# Create the main window
+root = tk.Tk()
+root.title("Schrödinger Coin Model Monte Carlo Simulator")
+
+# Create the input fields
+P0_var = tk.StringVar(value='60000')
+M_success_var = tk.StringVar(value='10000000000000')
+p_success_var = tk.StringVar(value='0.1')
+T_var = tk.StringVar(value='10')
+r_var = tk.StringVar(value='0.02')
+N_var = tk.StringVar(value='10000')
+total_bitcoin_supply_var = tk.StringVar(value='21000000')
+
+inputs = [
+    ("Current Bitcoin Price", P0_var),
+    ("Market Cap on Success", M_success_var),
+    ("Probability of Success", p_success_var),
+    ("Time Horizon (Years)", T_var),
+    ("Annual Discount Rate", r_var),
+    ("Number of Simulations", N_var),
+    ("Total Bitcoin Supply", total_bitcoin_supply_var),
+]
+
+for i, (label_text, var) in enumerate(inputs):
+    label = ttk.Label(root, text=label_text)
+    label.grid(row=i, column=0, padx=10, pady=5, sticky=tk.E)
+    entry = ttk.Entry(root, textvariable=var)
+    entry.grid(row=i, column=1, padx=10, pady=5, sticky=tk.W)
+
+
+def main():
+    # Run the main loop
+    root.mainloop()
+
+# Create the Calculate button
+calculate_button = ttk.Button(root, text="Calculate Fair Value", command=calculate_fair_value)
+calculate_button.grid(row=len(inputs), column=0, columnspan=2, pady=10)
+
+# Create the result label
+result_label = ttk.Label(root, text="")
+result_label.grid(row=len(inputs) + 1, column=0, columnspan=2)
+
+
+if __name__ == "__main__":
+    main()
